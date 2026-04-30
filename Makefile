@@ -44,8 +44,8 @@ OBJS=${objdir}/namelist.o \
      ${objdir}/aed_csv.o \
      ${objdir}/aed_time.o
 
-CFLAGS=-Wall -O3
-INCLUDES=-I${incdir}
+CFLAGS+=-Wall -O3
+INCLUDES+=-I${incdir}
 ifeq ($(F90),ifort)
   FFLAGS=-warn all -module ${moddir} -static-intel -mp1 -stand f03
 else ifeq ($(F90),ifx)
