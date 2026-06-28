@@ -70,7 +70,7 @@ static const AED_REAL missing = MISVAL;
 //static const AED_REAL NaN = missing / zero;
 static const AED_REAL NaN = MISVAL / 0.;
 
-#define BUFCHUNK    10240
+#define BUFCHUNK    262144
 
 
 /*============================================================================*/
