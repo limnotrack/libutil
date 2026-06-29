@@ -66,8 +66,8 @@ ifeq ($(MDEBUG),true)
   CFLAGS+=-fsanitize=address
 endif
 
-CFLAGS+=-fPIE
-FFLAGS+=-fPIE
+CFLAGS+=-fPIC
+FFLAGS+=-fPIC
 
 all: ${TARGET}
 
