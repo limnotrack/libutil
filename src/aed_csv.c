@@ -25,6 +25,7 @@
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.     *
  *                                                                            *
  ******************************************************************************/
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <string.h>
 #include <sys/types.h>
@@ -66,6 +67,63 @@ static AED_CSV_IN csv_if[MAX_IN_FILES];
 
 static const AED_REAL missing = MISVAL;
 //static const AED_REAL zero = 0.;
+
+/* Memory-backed CSV registry for Python/coupling (register before run) */
+typedef struct _MEM_CSV_T {
+    const char *name;
+    char *buffer;
+    size_t size;
+} MEM_CSV_T;
+
+static MEM_CSV_T mem_csv[MAX_MEM_CSV];
+static int n_mem_csv = 0;
+static int _mem_csv_logged = 0;
+
+/* Open-addressing hash index over mem_csv[] for O(1) name lookup. Without it,
+ * open_csv_input() does a linear scan of the whole registry per file open, which
+ * is O(n^2) per coupling step when thousands of inflow/outflow CSVs are registered
+ * (e.g. num_inflows=num_outlet=1492). The hash stores only indices into mem_csv[]. */
+#define MEM_CSV_HASH_SIZE 65536              /* power of two, > MAX_MEM_CSV (20000) */
+#define MEM_CSV_HASH_MASK (MEM_CSV_HASH_SIZE - 1)
+static int mem_csv_hash[MEM_CSV_HASH_SIZE];  /* index into mem_csv[]; -1 = empty */
+static int mem_csv_hash_ready = 0;
+
+/* FNV-1a hash of a NUL-terminated string. */
+static unsigned int _mem_csv_hash(const char *s)
+{
+    unsigned int h = 2166136261u;
+    while (*s) { h ^= (unsigned char)*s++; h *= 16777619u; }
+    return h;
+}
+
+/* Clear the hash index (call whenever the registry is reset). */
+static void _mem_csv_hash_reset(void)
+{
+    memset(mem_csv_hash, 0xFF, sizeof(mem_csv_hash));  /* 0xFF bytes => -1 ints */
+    mem_csv_hash_ready = 1;
+}
+
+/* Insert mem_csv[idx] into the hash index, keyed on its registered name. */
+static void _mem_csv_hash_insert(int idx)
+{
+    unsigned int slot = _mem_csv_hash(mem_csv[idx].name) & MEM_CSV_HASH_MASK;
+    while (mem_csv_hash[slot] != -1) slot = (slot + 1) & MEM_CSV_HASH_MASK;
+    mem_csv_hash[slot] = idx;
+}
+
+/* Look up a registered name; return its mem_csv[] index, or -1 if not found. */
+static int _mem_csv_find(const char *name)
+{
+    unsigned int slot;
+    int idx;
+    if (!mem_csv_hash_ready) return -1;
+    slot = _mem_csv_hash(name) & MEM_CSV_HASH_MASK;
+    while ((idx = mem_csv_hash[slot]) != -1) {
+        if (strcmp(mem_csv[idx].name, name) == 0) return idx;
+        slot = (slot + 1) & MEM_CSV_HASH_MASK;
+    }
+    return -1;
+}
 // VS C compiler doesnt like the first form, but is OK with t'other
 //static const AED_REAL NaN = missing / zero;
 static const AED_REAL NaN = MISVAL / 0.;
@@ -107,6 +165,7 @@ static char *read_line(FILE *inf)
     if ( !strlen(ln) && feof(inf) ) {
         free(ln);
         ln = NULL;
+        _ln = NULL;      /* reset the static too, else next realloc() hits freed memory */
     }
 
     return ln;
@@ -163,6 +222,51 @@ static int check_it(int csv, int idx)
 
 
 /******************************************************************************
+ * Register a CSV buffer for a specific filename (used by Python pglm).
+ * Returns the registry index of the new entry, or -1 if the registry is full.
+ * The index can be passed to update_memory_csv() to refresh the buffer/size
+ * in place on later steps without re-registering (avoids per-step churn).
+ ******************************************************************************/
+int register_memory_csv(const char *name, char *buffer, size_t size)
+{
+    if (n_mem_csv >= MAX_MEM_CSV) {
+        fprintf(stderr, "Too many memory CSV files\n");
+        return -1;
+    }
+    if (!mem_csv_hash_ready) _mem_csv_hash_reset();
+    mem_csv[n_mem_csv].name = name;
+    mem_csv[n_mem_csv].buffer = buffer;
+    mem_csv[n_mem_csv].size = size;
+    _mem_csv_hash_insert(n_mem_csv);
+    return n_mem_csv++;
+}
+
+/******************************************************************************
+ * Update an already-registered entry's buffer pointer and size in place,
+ * by the index returned from register_memory_csv(). The name and hash slot
+ * are unchanged, so the coupler can reuse buffers across steps instead of
+ * clear_memory_csvs() + re-registering the whole set every step.
+ * Returns 0 on success, -1 if idx is out of range.
+ ******************************************************************************/
+int update_memory_csv(int idx, char *buffer, size_t size)
+{
+    if (idx < 0 || idx >= n_mem_csv) return -1;
+    mem_csv[idx].buffer = buffer;
+    mem_csv[idx].size = size;
+    return 0;
+}
+
+/******************************************************************************
+ * Clear all registered memory CSVs (call before re-registering each step).
+ ******************************************************************************/
+void clear_memory_csvs(void)
+{
+    n_mem_csv = 0;
+    _mem_csv_logged = 0;
+    _mem_csv_hash_reset();
+}
+
+/******************************************************************************
  *                                                                            *
  *                                                                            *
  ******************************************************************************/
@@ -187,7 +291,33 @@ int open_csv_input(const char *fname, const char *timefmt)
         return -1;
     }
 
-    if ( (f = fopen(fname, "r")) == NULL ) {
+    /* Check if a memory buffer exists for this filename (exact or basename match).
+     * Uses the hash index (O(1)) instead of scanning the whole registry (O(n)). */
+    if (n_mem_csv > 0) {
+        const char *base = strrchr(fname, '/');
+        int idx;
+        base = base ? base + 1 : fname;
+        idx = _mem_csv_find(fname);             /* exact path match first */
+        if (idx < 0) idx = _mem_csv_find(base); /* then basename match */
+        if (idx >= 0) {
+            f = fmemopen(mem_csv[idx].buffer, mem_csv[idx].size, "r");
+            if (f == NULL) {
+                return -1;
+            }
+            /* macOS fmemopen streams are effectively unbuffered, so fgets does a
+             * read() callback per byte -> line reads were ~350x slower than a
+             * real file (the dominant cost of in-memory CSV mode). Force full
+             * buffering over the whole CSV to match fopen() speed. */
+            setvbuf(f, NULL, _IOFBF, mem_csv[idx].size > 0 ? mem_csv[idx].size : BUFSIZ);
+            if (!_mem_csv_logged) {
+                fprintf(stderr, "[aed_csv] Using memory buffers for inflow/outflow CSVs (not disk)\n");
+                _mem_csv_logged = 1;
+            }
+        }
+    }
+
+    /* Fallback to reading a real file */
+    if ( f == NULL && (f = fopen(fname, "r")) == NULL ) {
         fprintf(stderr, "Cannot find file \"%s\"\n", fname);
         return -1;
     }
@@ -240,6 +370,20 @@ int close_csv_input(int csvf)
     if ( csvf == _n_inf-1 ) _n_inf--;
 
     return 0;
+}
+/*++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*/
+
+
+/******************************************************************************
+ * Close all CSV inputs and reset count. Call at end of each GLM run when
+ * used as a library (e.g. Python coupling) to avoid "Too many csv_files open".
+ ******************************************************************************/
+void close_all_csv_inputs(void)
+{
+    int i;
+    for (i = 0; i < _n_inf; i++)
+        close_csv_input(i);
+    _n_inf = 0;
 }
 /*++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*/
 
