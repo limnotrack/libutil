@@ -27,15 +27,9 @@
 
 srcdir=src
 incdir=include
-ifeq ($(SINGLE),true)
-  objdir=obj_s
-  moddir=mod_s
-  TARGET=lib/libutil_s.a
-else
-  objdir=obj
-  moddir=mod
-  TARGET=lib/libutil.a
-endif
+objdir=obj
+moddir=mod
+TARGET=lib/libutil.a
 ifeq ($(MDEBUG),true)
   DEBUG=true
 endif
@@ -46,19 +40,6 @@ OBJS=${objdir}/namelist.o \
 
 CFLAGS+=-Wall -O3
 INCLUDES+=-I${incdir}
-ifeq ($(F90),ifort)
-  FFLAGS=-warn all -module ${moddir} -static-intel -mp1 -stand f03
-else ifeq ($(F90),ifx)
-  FFLAGS=-warn all -module ${moddir} -static-intel -mp1 -stand f03
-else ifeq ($(F90),pgfortran)
-  FFLAGS=-module ${moddir} -O3
-else
-  FFLAGS=-Wall -J ${moddir} -std=f2003
-  ifeq ($(F90),)
-    F90=gfortran
-    FFLAGS+=-ffree-line-length-none -fall-intrinsics
-  endif
-endif
 ifeq ($(DEBUG),true)
   CFLAGS+=-g
 endif
@@ -67,7 +48,6 @@ ifeq ($(MDEBUG),true)
 endif
 
 CFLAGS+=-fPIC
-FFLAGS+=-fPIC
 
 all: ${TARGET}
 
@@ -96,6 +76,3 @@ ${objdir}:
 
 ${objdir}/%.o: ${srcdir}/%.c ${incdir}/%.h ${incdir}/libutil.h
 	$(CC) $(CFLAGS) $(INCLUDES) -g -c $< -o $@
-
-${objdir}/%.o: ${srcdir}/%.F90 ${incdir}/%.h ${incdir}/libutil.h ${moddir}
-	$(F90) $(FFLAGS) -c $< -o $@
