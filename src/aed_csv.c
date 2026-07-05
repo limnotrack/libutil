@@ -25,7 +25,6 @@
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.     *
  *                                                                            *
  ******************************************************************************/
-#define _GNU_SOURCE
 #include <stdio.h>
 #include <string.h>
 #include <sys/types.h>
@@ -39,6 +38,11 @@
 #include "aed_csv.h"
 #include "aed_time.h"
 
+#define MAX_OUT_VALUES   40
+
+#define MAX_OUT_FILES 20000
+#define MAX_IN_FILES  20000
+#define MAX_MEM_CSV   20000
 
 /*----------------------------------------------------------------------------*/
 
@@ -66,8 +70,8 @@ static AED_CSV_IN csv_if[MAX_IN_FILES];
 
 
 static const AED_REAL missing = MISVAL;
-//static const AED_REAL zero = 0.;
 
+#ifndef _WIN32
 /* Memory-backed CSV registry for Python/coupling (register before run) */
 typedef struct _MEM_CSV_T {
     const char *name;
@@ -124,6 +128,8 @@ static int _mem_csv_find(const char *name)
     }
     return -1;
 }
+#endif
+
 // VS C compiler doesnt like the first form, but is OK with t'other
 //static const AED_REAL NaN = missing / zero;
 static const AED_REAL NaN = MISVAL / 0.;
@@ -164,8 +170,7 @@ static char *read_line(FILE *inf)
 
     if ( !strlen(ln) && feof(inf) ) {
         free(ln);
-        ln = NULL;
-        _ln = NULL;      /* reset the static too, else next realloc() hits freed memory */
+        _ln = (ln = NULL);
     }
 
     return ln;
@@ -221,6 +226,7 @@ static int check_it(int csv, int idx)
 /*++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*/
 
 
+#ifndef _WIN32
 /******************************************************************************
  * Register a CSV buffer for a specific filename (used by Python pglm).
  * Returns the registry index of the new entry, or -1 if the registry is full.
@@ -265,6 +271,7 @@ void clear_memory_csvs(void)
     _mem_csv_logged = 0;
     _mem_csv_hash_reset();
 }
+#endif
 
 /******************************************************************************
  *                                                                            *
@@ -291,6 +298,7 @@ int open_csv_input(const char *fname, const char *timefmt)
         return -1;
     }
 
+#ifndef _WIN32
     /* Check if a memory buffer exists for this filename (exact or basename match).
      * Uses the hash index (O(1)) instead of scanning the whole registry (O(n)). */
     if (n_mem_csv > 0) {
@@ -318,6 +326,9 @@ int open_csv_input(const char *fname, const char *timefmt)
 
     /* Fallback to reading a real file */
     if ( f == NULL && (f = fopen(fname, "r")) == NULL ) {
+#else
+    if ( (f = fopen(fname, "r")) == NULL ) {
+#endif
         fprintf(stderr, "Cannot find file \"%s\"\n", fname);
         return -1;
     }

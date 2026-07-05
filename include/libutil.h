@@ -28,7 +28,7 @@
 #ifndef _LIBUTIL_H_
 #define _LIBUTIL_H_
 
-#define LIB_UTIL_VERSION  "1.0.15"
+#define LIB_UTIL_VERSION  "1.0.16"
 
 #ifdef __STDC__
 
