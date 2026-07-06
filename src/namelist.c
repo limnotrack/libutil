@@ -559,6 +559,9 @@ int get_namelist(int file, NAMELIST *nl)
                     case TYPE_INT :
                         if ( (ne->type & MASK_TYPE) == TYPE_INT )
                             *((int*)(nl->data)) = ne->data[0].i;
+                        else if ( (ne->type & MASK_TYPE) == TYPE_BOOL )
+                            //# accept .true./.false. for integer option flags
+                            *((int*)(nl->data)) = ne->data[0].b ? 1 : 0;
                         break;
                     case TYPE_DOUBLE :
                         if ( (ne->type & MASK_TYPE) == TYPE_DOUBLE )
@@ -568,7 +571,12 @@ int get_namelist(int file, NAMELIST *nl)
                         *((char**)(nl->data)) = ne->data[0].s;
                         break;
                     case TYPE_BOOL :
-                        *((_Bool*)(nl->data)) = ne->data[0].b;
+                        if ( (ne->type & MASK_TYPE) == TYPE_INT )
+                            //# explicit coercion: numeric bools were previously
+                            //  read via union punning of the low bytes
+                            *((_Bool*)(nl->data)) = (ne->data[0].i != 0);
+                        else
+                            *((_Bool*)(nl->data)) = ne->data[0].b;
                         break;
                     default :
                         fprintf(stderr, "    Value of unknown type %d\n", ne->type);
