@@ -633,8 +633,7 @@ static void _add_col(int f, const char *name)
         int cap = (o->buff_cap > 0) ? o->buff_cap * 2 : 64;
         AED_REAL *nb = realloc(o->buff, sizeof(AED_REAL)*cap);
         if ( nb == NULL ) {
-            fprintf(stderr, "Out of memory error
-");
+            fprintf(stderr, "Out of memory error\n");
             exit(1);
         }
         o->buff = nb;
